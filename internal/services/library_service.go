@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -129,18 +130,18 @@ func (s *libraryService) CheckoutBook(bookID, userID uuid.UUID) (*models.Checkou
 		copy, err := s.bookCopyRepo.FindAvailableForUpdate(tx, bookID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				// No copies, create reservation.
-				nextPos, err := s.reservationRepo.GetNextQueuePosition(tx, bookID)
-				if err != nil {
+				// No copies: return existing reservation if user already reserved this book.
+				existing, err := s.reservationRepo.GetByBookAndUser(tx, bookID, userID)
+				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
 				}
-				res := &models.Reservation{
-					BookID:        bookID,
-					UserID:        userID,
-					QueuePosition: nextPos,
-					CreatedAt:     time.Now().UTC(),
+				if existing != nil {
+					resultReservation = existing
+					return ErrNoAvailableCopy
 				}
-				if err := s.reservationRepo.Create(tx, res); err != nil {
+				// Create new reservation (with optional retry on duplicate queue_position).
+				res, err := s.createReservationWithRetry(tx, bookID, userID)
+				if err != nil {
 					return err
 				}
 				resultReservation = res
@@ -246,6 +247,45 @@ func (s *libraryService) ReturnCheckout(checkoutID uuid.UUID) (*models.Checkout,
 		return nil, err
 	}
 	return updated, nil
+}
+
+// createReservationWithRetry creates a reservation; on duplicate queue_position (unique constraint), retries once.
+func (s *libraryService) createReservationWithRetry(tx *gorm.DB, bookID, userID uuid.UUID) (*models.Reservation, error) {
+	nextPos, err := s.reservationRepo.GetNextQueuePosition(tx, bookID)
+	if err != nil {
+		return nil, err
+	}
+	res := &models.Reservation{
+		BookID:        bookID,
+		UserID:        userID,
+		QueuePosition: nextPos,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := s.reservationRepo.Create(tx, res); err != nil {
+		if isUniqueViolation(err) {
+			// Retry once with a fresh position (another concurrent insert took our slot).
+			nextPos, err = s.reservationRepo.GetNextQueuePosition(tx, bookID)
+			if err != nil {
+				return nil, err
+			}
+			res = &models.Reservation{
+				BookID:        bookID,
+				UserID:        userID,
+				QueuePosition: nextPos,
+				CreatedAt:     time.Now().UTC(),
+			}
+			if err := s.reservationRepo.Create(tx, res); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "23505")
 }
 
 func calculateFine(dueDate, returnedAt time.Time) int {

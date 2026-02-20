@@ -37,6 +37,7 @@ type CheckoutRepository interface {
 type ReservationRepository interface {
 	Create(db *gorm.DB, reservation *models.Reservation) error
 	GetNextForBook(db *gorm.DB, bookID uuid.UUID) (*models.Reservation, error)
+	GetByBookAndUser(db *gorm.DB, bookID, userID uuid.UUID) (*models.Reservation, error)
 	Delete(db *gorm.DB, id uuid.UUID) error
 	GetNextQueuePosition(db *gorm.DB, bookID uuid.UUID) (int, error)
 	ListByBook(db *gorm.DB, bookID uuid.UUID) ([]models.Reservation, error)
@@ -233,6 +234,18 @@ func (r *reservationRepository) GetNextForBook(db *gorm.DB, bookID uuid.UUID) (*
 	return &res, nil
 }
 
+func (r *reservationRepository) GetByBookAndUser(db *gorm.DB, bookID, userID uuid.UUID) (*models.Reservation, error) {
+	if db == nil {
+		db = r.db
+	}
+	var res models.Reservation
+	err := db.Where("book_id = ? AND user_id = ?", bookID, userID).First(&res).Error
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 func (r *reservationRepository) Delete(db *gorm.DB, id uuid.UUID) error {
 	if db == nil {
 		db = r.db
@@ -243,6 +256,14 @@ func (r *reservationRepository) Delete(db *gorm.DB, id uuid.UUID) error {
 func (r *reservationRepository) GetNextQueuePosition(db *gorm.DB, bookID uuid.UUID) (int, error) {
 	if db == nil {
 		db = r.db
+	}
+	// Lock reservation rows for this book so MAX(queue_position) is stable under concurrency.
+	var ids []uuid.UUID
+	if err := db.Model(&models.Reservation{}).
+		Where("book_id = ?", bookID).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
 	}
 	var maxPos int
 	if err := db.Model(&models.Reservation{}).

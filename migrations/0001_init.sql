@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS checkouts (
 );
 CREATE INDEX IF NOT EXISTS idx_checkouts_book_copy_id ON checkouts(book_copy_id);
 CREATE INDEX IF NOT EXISTS idx_checkouts_user_id ON checkouts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_checkout ON checkouts(book_copy_id) WHERE returned_at IS NULL;
 
 -- Reservations
 CREATE TABLE IF NOT EXISTS reservations (
@@ -61,4 +62,6 @@ CREATE TABLE IF NOT EXISTS reservations (
 CREATE INDEX IF NOT EXISTS idx_reservations_book_id ON reservations(book_id);
 CREATE INDEX IF NOT EXISTS idx_reservations_user_id ON reservations(user_id);
 CREATE INDEX IF NOT EXISTS idx_reservations_queue ON reservations(book_id, queue_position);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_user_book_reservation ON reservations(book_id, user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_book_queue_position ON reservations(book_id, queue_position);
 
